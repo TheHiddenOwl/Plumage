@@ -10,6 +10,9 @@ def embed_lsb_audio(audio: AudioSegment, payload: bytes, passphrase: str) -> Aud
     Embeds payload into the LSB of audio samples using a PRNG shuffle.
     Works for WAV.
     """
+    if audio.sample_width not in (1, 2):
+        raise ValueError(f"Unsupported sample width: {audio.sample_width} bytes. Only 8-bit and 16-bit audio is supported.")
+
     encrypted_payload = encrypt(payload, passphrase)
     payload_len = len(encrypted_payload)
     full_payload = payload_len.to_bytes(4, byteorder='big') + encrypted_payload
@@ -22,47 +25,50 @@ def embed_lsb_audio(audio: AudioSegment, payload: bytes, passphrase: str) -> Aud
 
     indices = get_shuffled_indices(len(samples), passphrase)
 
-    # Audio samples can be signed, so we need to be careful with bitwise ops
+    # Audio samples can be signed, but Python's integer model handles it.
+    # Numpy's assignment will handle truncation to the original dtype.
     for i, bit in enumerate(bits):
         idx = indices[i]
-        # Clear LSB and set it to bit
-        val = int(samples[idx])
-        # For signed 16-bit, we need to handle negative values correctly for LSB
-        if val < 0:
-             new_val = (val & ~1) | int(bit)
-             # Map back to signed 16-bit range if needed
-             if new_val > 32767: new_val -= 65536
-        else:
-             new_val = (val & ~1) | int(bit)
+        val = samples[idx]
+        samples[idx] = (val & ~1) | bit
 
-        samples[idx] = new_val
-
-    new_audio = audio._spawn(samples.tobytes())
+    new_audio = AudioSegment(
+        data=samples.tobytes(),
+        sample_width=audio.sample_width,
+        frame_rate=audio.frame_rate,
+        channels=audio.channels,
+    )
     return new_audio
 
 def extract_lsb_audio(audio: AudioSegment, passphrase: str) -> bytes:
     """
     Extracts payload from the LSB of audio samples using a PRNG shuffle.
     """
+    if audio.sample_width not in (1, 2):
+        raise ValueError(f"Unsupported sample width: {audio.sample_width} bytes. Only 8-bit and 16-bit audio is supported.")
+
     samples = np.array(audio.get_array_of_samples())
     indices = get_shuffled_indices(len(samples), passphrase)
 
     # 1. Extract length
-    len_bits = ""
+    len_bits = []
     for i in range(32):
         idx = indices[i]
-        len_bits += str(int(samples[idx]) & 1)
+        len_bits.append(samples[idx] & 1)
 
-    payload_len = int(len_bits, 2)
+    payload_len = 0
+    for bit in len_bits:
+        payload_len = (payload_len << 1) | bit
 
-    if payload_len > (len(samples) - 32) // 8 or payload_len < 0:
-        raise ValueError("Extracted length is impossibly large. Likely wrong passphrase.")
+    max_possible = (len(samples) - 32) // 8
+    if not (0 < payload_len <= max_possible):
+        raise ValueError("Extracted length is invalid. Likely wrong passphrase.")
 
     # 2. Extract encrypted payload
-    payload_bits = ""
+    payload_bits = []
     for i in range(32, 32 + (payload_len * 8)):
         idx = indices[i]
-        payload_bits += str(int(samples[idx]) & 1)
+        payload_bits.append(samples[idx] & 1)
 
     encrypted_payload = bits_to_bytes(payload_bits)
     return decrypt(encrypted_payload, passphrase)

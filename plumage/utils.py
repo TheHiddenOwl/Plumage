@@ -1,6 +1,7 @@
 import hashlib
 import random
 from typing import List
+from PIL import Image
 
 def get_shuffled_indices(size: int, passphrase: str) -> List[int]:
     """
@@ -28,10 +29,11 @@ def get_shuffled_indices(size: int, passphrase: str) -> List[int]:
 
     return indices
 
-def strip_metadata_image(image):
+def rebuild_image_from_pixels(image: Image.Image) -> Image.Image:
     """
-    Strips metadata from a PIL Image object.
+    Rebuilds an image from raw pixel data to guarantee no metadata survives.
     """
-    image_without_exif = image.copy()
-    image_without_exif.info = {}
-    return image_without_exif
+    data = list(image.getdata())
+    clean = Image.new(image.mode, image.size)
+    clean.putdata(data)
+    return clean

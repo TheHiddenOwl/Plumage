@@ -1,0 +1,5 @@
+Pillow
+cryptography>=36.0
+numpy
+pydub
+scipy>=1.4.0
