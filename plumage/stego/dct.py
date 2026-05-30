@@ -1,6 +1,6 @@
 import numpy as np
 from PIL import Image
-import scipy.fftpack as fft
+from scipy.fft import dct, idct
 from plumage.crypto import encrypt, decrypt
 from plumage.stego.lsb import bytes_to_bits, bits_to_bytes
 from plumage.utils import get_shuffled_indices
@@ -21,11 +21,17 @@ def embed_dct_image(img: Image.Image, payload: bytes, passphrase: str) -> Image.
     # Convert to YCbCr
     img_ycbcr = img.convert('YCbCr')
     y, cb, cr = img_ycbcr.split()
-    y_data = np.array(y).astype(np.float32)
 
-    h, w = y_data.shape
+    w, h = y.size
     # Force alignment to 8x8 blocks
-    y_data = y_data[:(h // 8) * 8, :(w // 8) * 8]
+    w_aligned = (w // 8) * 8
+    h_aligned = (h // 8) * 8
+
+    y = y.crop((0, 0, w_aligned, h_aligned))
+    cb = cb.crop((0, 0, w_aligned, h_aligned))
+    cr = cr.crop((0, 0, w_aligned, h_aligned))
+
+    y_data = np.array(y).astype(np.float32)
     h, w = y_data.shape
 
     # Number of 8x8 blocks
@@ -47,16 +53,29 @@ def embed_dct_image(img: Image.Image, payload: bytes, passphrase: str) -> Image.
         col = (b_idx % num_blocks_w) * 8
 
         block = y_data[row:row+8, col:col+8]
-        dct_block = fft.dct(fft.dct(block.T, norm='ortho').T, norm='ortho')
+        dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
 
         bit = int(bits[bit_idx])
 
-        if bit == 1:
-            dct_block[1, 1] = 300.0
-        else:
-            dct_block[1, 1] = -300.0
+        # Use QIM (Quantization Index Modulation) for better robustness and less artifacts
+        q_step = 20.0
+        val = dct_block[1, 1]
+        n = np.floor(val / q_step)
 
-        y_data[row:row+8, col:col+8] = fft.idct(fft.idct(dct_block.T, norm='ortho').T, norm='ortho')
+        if bit == 1:
+            if n % 2 == 0:
+                new_val = (n + 1) * q_step + q_step / 2
+            else:
+                new_val = n * q_step + q_step / 2
+        else:
+            if n % 2 == 0:
+                new_val = n * q_step + q_step / 2
+            else:
+                new_val = (n - 1) * q_step + q_step / 2
+
+        dct_block[1, 1] = new_val
+
+        y_data[row:row+8, col:col+8] = idct(idct(dct_block.T, norm='ortho').T, norm='ortho')
         bit_idx += 1
 
     y_final = Image.fromarray(np.clip(y_data, 0, 255).astype(np.uint8))
@@ -65,11 +84,13 @@ def embed_dct_image(img: Image.Image, payload: bytes, passphrase: str) -> Image.
 def extract_dct_image(img: Image.Image, passphrase: str) -> bytes:
     img_ycbcr = img.convert('YCbCr')
     y, _, _ = img_ycbcr.split()
-    y_data = np.array(y).astype(np.float32)
 
-    h, w = y_data.shape
-    # Force alignment to 8x8 blocks
-    y_data = y_data[:(h // 8) * 8, :(w // 8) * 8]
+    w, h = y.size
+    w_aligned = (w // 8) * 8
+    h_aligned = (h // 8) * 8
+    y = y.crop((0, 0, w_aligned, h_aligned))
+
+    y_data = np.array(y).astype(np.float32)
     h, w = y_data.shape
 
     num_blocks_h = h // 8
@@ -79,42 +100,58 @@ def extract_dct_image(img: Image.Image, passphrase: str) -> bytes:
     indices = get_shuffled_indices(total_blocks, passphrase)
 
     # We first need to find the length. 32 bits = 32 blocks.
-    len_bits = ""
+    len_bits = []
     for i in range(32):
         b_idx = indices[i]
         row = (b_idx // num_blocks_w) * 8
         col = (b_idx % num_blocks_w) * 8
         block = y_data[row:row+8, col:col+8]
-        dct_block = fft.dct(fft.dct(block.T, norm='ortho').T, norm='ortho')
+        dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
 
         val = dct_block[1, 1]
-        if val > 50:
-             len_bits += "1"
-        elif val < -50:
-             len_bits += "0"
-        else:
-             len_bits += "1" if val >= 0 else "0"
+        q_step = 20.0
 
-    payload_len = int(len_bits, 2)
+        # Check for ambiguity
+        dist_from_center = abs(val % q_step - q_step / 2)
+        if dist_from_center > q_step * 0.25:
+            raise ValueError(
+                f"Ambiguous DCT coefficient ({val:.1f}) at block {b_idx}. "
+                "Image may be corrupted or wrong passphrase."
+            )
+
+        n = np.floor(val / q_step)
+        bit = int(n % 2)
+        len_bits.append(bit)
+
+    payload_len = 0
+    for bit in len_bits:
+        payload_len = (payload_len << 1) | bit
 
     if payload_len > (total_blocks - 32) // 8 or payload_len < 0:
         raise ValueError("Invalid DCT payload length. Wrong passphrase or image corrupted.")
 
-    payload_bits = ""
+    payload_bits = []
     for i in range(32, 32 + (payload_len * 8)):
         b_idx = indices[i]
         row = (b_idx // num_blocks_w) * 8
         col = (b_idx % num_blocks_w) * 8
         block = y_data[row:row+8, col:col+8]
-        dct_block = fft.dct(fft.dct(block.T, norm='ortho').T, norm='ortho')
+        dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
 
         val = dct_block[1, 1]
-        if val > 50:
-             payload_bits += "1"
-        elif val < -50:
-             payload_bits += "0"
-        else:
-             payload_bits += "1" if val >= 0 else "0"
+        q_step = 20.0
+
+        # Check for ambiguity
+        dist_from_center = abs(val % q_step - q_step / 2)
+        if dist_from_center > q_step * 0.25:
+            raise ValueError(
+                f"Ambiguous DCT coefficient ({val:.1f}) at block {b_idx}. "
+                "Image may be corrupted or wrong passphrase."
+            )
+
+        n = np.floor(val / q_step)
+        bit = int(n % 2)
+        payload_bits.append(bit)
 
     encrypted_payload = bits_to_bytes(payload_bits)
     return decrypt(encrypted_payload, passphrase)
