@@ -58,7 +58,7 @@ def extract_lsb_audio(audio: AudioSegment, passphrase: str) -> bytes:
 
     payload_len = 0
     for bit in len_bits:
-        payload_len = (payload_len << 1) | bit
+        payload_len = (payload_len << 1) | int(bit)
 
     max_possible = (len(samples) - 32) // 8
     if not (0 < payload_len <= max_possible):

@@ -64,7 +64,7 @@ def extract_lsb_image(img: Image.Image, passphrase: str) -> bytes:
 
     payload_len = 0
     for bit in len_bits:
-        payload_len = (payload_len << 1) | bit
+        payload_len = (payload_len << 1) | int(bit)
 
     # Safety check
     max_possible = (len(flat_pixels) - 32) // 8

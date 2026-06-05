@@ -113,7 +113,7 @@ def extract_dct_image(img: Image.Image, passphrase: str) -> bytes:
 
         # Check for ambiguity
         dist_from_center = abs(val % q_step - q_step / 2)
-        if dist_from_center > q_step * 0.25:
+        if dist_from_center > q_step * 0.4:
             raise ValueError(
                 f"Ambiguous DCT coefficient ({val:.1f}) at block {b_idx}. "
                 "Image may be corrupted or wrong passphrase."
@@ -143,7 +143,7 @@ def extract_dct_image(img: Image.Image, passphrase: str) -> bytes:
 
         # Check for ambiguity
         dist_from_center = abs(val % q_step - q_step / 2)
-        if dist_from_center > q_step * 0.25:
+        if dist_from_center > q_step * 0.4:
             raise ValueError(
                 f"Ambiguous DCT coefficient ({val:.1f}) at block {b_idx}. "
                 "Image may be corrupted or wrong passphrase."
